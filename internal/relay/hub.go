@@ -1,5 +1,3 @@
-// internal/relay/hub.go
-
 package relay
 
 import (

@@ -1,27 +1,31 @@
 package main
 
 import (
-    "flag"
-    "log"
-    "net"
+	"flag"
+	"log"
 
-    "github.com/suifei/godesk/internal/client"
-    "github.com/suifei/godesk/pkg/network"
+	"github.com/faiface/pixel/pixelgl"
+	"github.com/suifei/godesk/internal/client"
 )
 
+func run() {
+	serverIP := flag.String("server", "localhost", "Server IP address")
+	serverPort := flag.String("port", "3388", "Server port")
+	flag.Parse()
+
+	serverAddr := *serverIP + ":" + *serverPort
+	log.Printf("Connecting to server at %s", serverAddr)
+
+	clientHandler, err := client.NewClientHandler(serverAddr)
+	if err != nil {
+		log.Fatalf("Failed to create client handler: %v", err)
+	}
+
+	log.Printf("Connected to server at %s", serverAddr)
+
+	clientHandler.Handle()
+}
+
 func main() {
-    serverAddr := flag.String("server", "localhost:8000", "Server address")
-    flag.Parse()
-
-    conn, err := net.Dial("tcp", *serverAddr)
-    if err != nil {
-        log.Fatalf("Failed to connect to server: %v", err)
-    }
-    defer conn.Close()
-
-    log.Printf("Connected to server at %s", *serverAddr)
-
-    tcpConn := network.NewTCPConnection(conn)
-    clientHandler := client.NewClientHandler(tcpConn)
-    clientHandler.Handle()
+	pixelgl.Run(run)
 }

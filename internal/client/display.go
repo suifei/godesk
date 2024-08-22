@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image/png"
 	"log"
+	"sync"
 
 	"github.com/faiface/pixel"
 	"github.com/faiface/pixel/pixelgl"
@@ -11,42 +12,78 @@ import (
 )
 
 type Display struct {
-	Window *pixelgl.Window // Changed from window to Window to make it public
+	Window     *pixelgl.Window
+	sprite     *pixel.Sprite
+	spriteRect pixel.Rect
+	mutex      sync.Mutex
 }
 
 func NewDisplay() *Display {
 	cfg := pixelgl.WindowConfig{
-		Title:  "GoDesk Client",
-		Bounds: pixel.R(0, 0, 800, 600),
-		VSync:  true,
+		Title:     "GoDesk Client",
+		Bounds:    pixel.R(0, 0, 800, 600),
+		VSync:     true,
+		Resizable: true,
 	}
 	win, err := pixelgl.NewWindow(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create window: %v", err)
 	}
-	return &Display{Window: win} // Changed from window to Window
+	return &Display{Window: win}
 }
-func (d *Display) Update(update *protocol.ScreenUpdate) {
+
+func (d *Display) UpdateScreen(update *protocol.ScreenUpdate) {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+
+	if update == nil || len(update.ImageData) == 0 {
+		log.Println("Received empty screen update")
+		return
+	}
+
 	img, err := png.Decode(bytes.NewReader(update.ImageData))
 	if err != nil {
 		log.Printf("Error decoding screen update: %v", err)
 		return
 	}
 
-	bounds := img.Bounds()
 	pic := pixel.PictureDataFromImage(img)
-	sprite := pixel.NewSprite(pic, pic.Bounds())
+	d.sprite = pixel.NewSprite(pic, pic.Bounds())
+	d.spriteRect = pic.Bounds()
+	log.Printf("Updated sprite with new image: %dx%d", d.spriteRect.W(), d.spriteRect.H())
+}
+
+func (d *Display) Update() {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
 
 	d.Window.Clear(pixel.RGB(0, 0, 0))
-	sprite.Draw(d.Window, pixel.IM.
-		ScaledXY(pixel.ZV, pixel.V(
-			float64(d.Window.Bounds().W())/float64(bounds.Dx()),
-			float64(d.Window.Bounds().H())/float64(bounds.Dy()),
-		)).
-		Moved(d.Window.Bounds().Center()))
-	d.Window.Update() // Changed from window to Window
+	if d.sprite != nil {
+		// 计算缩放比例
+		scale := min(
+			d.Window.Bounds().W()/d.spriteRect.W(),
+			d.Window.Bounds().H()/d.spriteRect.H(),
+		)
+
+		// 计算绘制位置，使图像居中
+		pos := d.Window.Bounds().Center()
+
+		// 绘制精灵
+		d.sprite.Draw(d.Window, pixel.IM.Scaled(pixel.ZV, scale).Moved(pos))
+		log.Println("Drew sprite to window")
+	} else {
+		log.Println("No sprite to draw")
+	}
+	d.Window.Update()
 }
 
 func (d *Display) ShouldClose() bool {
-	return d.Window.Closed() // Changed from window to Window
+	return d.Window.Closed()
+}
+
+func min(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }

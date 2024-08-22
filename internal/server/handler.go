@@ -21,7 +21,7 @@ func NewClientHandler(conn *network.TCPConnection) *ClientHandler {
 }
 
 func (h *ClientHandler) Handle() {
-	log.Println("New client connected")
+	log.Println("New client connected, starting handler")
 
 	// 开始屏幕捕获
 	go h.capturer.Start()
@@ -35,6 +35,7 @@ func (h *ClientHandler) Handle() {
 }
 
 func (h *ClientHandler) handleIncomingMessages() {
+	log.Println("Starting to handle incoming messages")
 	for {
 		msg, err := h.conn.Receive()
 		if err != nil {
@@ -44,19 +45,20 @@ func (h *ClientHandler) handleIncomingMessages() {
 
 		switch payload := msg.Payload.(type) {
 		case *protocol.Message_MouseEvent:
-			h.handleMouseEvent(payload.MouseEvent)
+			log.Printf("Received mouse event: %v", payload.MouseEvent)
 		case *protocol.Message_KeyEvent:
-			h.handleKeyEvent(payload.KeyEvent)
-		case *protocol.Message_FileTransferRequest:
-			h.handleFileTransferRequest(payload.FileTransferRequest)
+			log.Printf("Received key event: %v", payload.KeyEvent)
 		default:
-			log.Printf("Unhandled message type: %T", payload)
+			log.Printf("Received unknown message type: %T", payload)
 		}
 	}
 }
 
 func (h *ClientHandler) sendScreenUpdates() {
+	log.Println("Starting to send screen updates")
 	for update := range h.capturer.Updates() {
+		log.Printf("Sending screen update: %dx%d, %d bytes",
+			update.Width, update.Height, len(update.ImageData))
 		msg := &protocol.Message{
 			Payload: &protocol.Message_ScreenUpdate{
 				ScreenUpdate: update,
@@ -67,19 +69,4 @@ func (h *ClientHandler) sendScreenUpdates() {
 			return
 		}
 	}
-}
-
-func (h *ClientHandler) handleMouseEvent(event *protocol.MouseEvent) {
-	// 实现鼠标事件处理
-	log.Printf("Received mouse event: %v", event)
-}
-
-func (h *ClientHandler) handleKeyEvent(event *protocol.KeyEvent) {
-	// 实现键盘事件处理
-	log.Printf("Received key event: %v", event)
-}
-
-func (h *ClientHandler) handleFileTransferRequest(request *protocol.FileTransferRequest) {
-	// 实现文件传输请求处理
-	log.Printf("Received file transfer request: %v", request)
 }
