@@ -46,14 +46,23 @@ func (h *ClientHandler) handleIncomingMessages() {
 		switch payload := msg.Payload.(type) {
 		case *protocol.Message_MouseEvent:
 			log.Printf("Received mouse event: %v", payload.MouseEvent)
+			h.handleMouseEvent(payload.MouseEvent)
 		case *protocol.Message_KeyEvent:
 			log.Printf("Received key event: %v", payload.KeyEvent)
+			h.handleKeyEvent(payload.KeyEvent)
 		default:
 			log.Printf("Received unknown message type: %T", payload)
 		}
 	}
 }
 
+func (h *ClientHandler) handleMouseEvent(event *protocol.MouseEvent) {
+	HandleMouseEvent(event)
+}
+
+func (h *ClientHandler) handleKeyEvent(event *protocol.KeyEvent) {
+	HandleKeyEvent(event)
+}
 func (h *ClientHandler) sendScreenUpdates() {
 	log.Println("Starting to send screen updates")
 	for update := range h.capturer.Updates() {
