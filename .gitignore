@@ -3,7 +3,7 @@
 # Edit at https://www.toptal.com/developers/gitignore?templates=windows,visualstudiocode,c,c++,go,goland,goland+all,goland+iml,macos,node,visualbasic,visualstudio,webstorm,webstorm+all,webstorm+iml
 
 [Bb]uild/
-
+golang-project-godesk-codebase.txt
 ### C ###
 # Prerequisites
 *.d
