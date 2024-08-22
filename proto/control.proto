@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package godesk;
+
+option go_package = "github.com/suifei/godesk/internal/protocol";
+
+message MouseEvent {
+  enum EventType {
+    MOVE = 0;
+    LEFT_DOWN = 1;
+    LEFT_UP = 2;
+    RIGHT_DOWN = 3;
+    RIGHT_UP = 4;
+    MIDDLE_DOWN = 5;
+    MIDDLE_UP = 6;
+    SCROLL = 7;
+  }
+  EventType event_type = 1;
+  int32 x = 2;
+  int32 y = 3;
+  int32 scroll_delta = 4;  // 用于滚轮事件
+}
+
+message KeyEvent {
+  enum EventType {
+    KEY_DOWN = 0;
+    KEY_UP = 1;
+  }
+  EventType event_type = 1;
+  int32 key_code = 2;
+  bool shift = 3;
+  bool ctrl = 4;
+  bool alt = 5;
+  bool meta = 6;  // Windows键或Command键
+}

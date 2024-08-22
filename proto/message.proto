@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package godesk;
+
+import "proto/screen.proto";
+import "proto/control.proto";
+import "proto/auth.proto";
+import "proto/filetransfer.proto";
+import "proto/relay.proto";
+
+option go_package = "github.com/suifei/godesk/internal/protocol";
+
+message Message {
+  oneof payload {
+    ScreenUpdate screen_update = 1;
+    ScreenUpdateRequest screen_update_request = 2;
+    MouseEvent mouse_event = 3;
+    KeyEvent key_event = 4;
+    AuthRequest auth_request = 5;
+    AuthResponse auth_response = 6;
+    FileTransferRequest file_transfer_request = 7;
+    FileTransferResponse file_transfer_response = 8;
+    FileChunk file_chunk = 9;
+    FileTransferStatus file_transfer_status = 10;
+    RelayHandshake relay_handshake = 11;
+    RelayMessage relay_message = 12;
+    RelayStatus relay_status = 13;
+  }
+}

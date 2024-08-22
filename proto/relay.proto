@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package godesk;
+
+option go_package = "github.com/suifei/godesk/internal/protocol";
+
+message RelayHandshake {
+  string client_id = 1;
+  string session_id = 2;
+}
+
+message RelayMessage {
+  string sender_id = 1;
+  string recipient_id = 2;
+  bytes payload = 3;
+}
+
+message RelayStatus {
+  enum Status {
+    CONNECTED = 0;
+    DISCONNECTED = 1;
+    ERROR = 2;
+  }
+  Status status = 1;
+  string message = 2;
+}
