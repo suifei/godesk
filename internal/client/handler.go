@@ -83,6 +83,8 @@ package client
 import (
 	"bytes"
 	"image"
+	"image/jpeg"
+	"image/png"
 	"net"
 	"time"
 
@@ -165,26 +167,47 @@ func (h *ClientHandler) handleScreenUpdate(update *protocol.ScreenUpdate) {
 	log.Debugf("Received screen update: %dx%d, %d bytes",
 		update.Width, update.Height, len(update.ImageData))
 
-	// Check if the received data size matches the expected size
-	expectedSize := int(update.Width) * int(update.Height) * 4 // 4 bytes per pixel (RGBA)
-	if len(update.ImageData) != expectedSize {
-		log.Errorf("Received data size (%d) does not match expected size (%d)", len(update.ImageData), expectedSize)
+	var img image.Image
+	var err error
+
+	// 尝试解码图像数据
+	if update.CompressionType == protocol.CompressionType_PNG {
+		img, err = png.Decode(bytes.NewReader(update.ImageData))
+	} else if update.CompressionType == protocol.CompressionType_JPEG {
+		img, err = jpeg.Decode(bytes.NewReader(update.ImageData))
+	} else {
+		// 假设是原始 RGBA 数据
+		expectedSize := int(update.Width) * int(update.Height) * 4 // 4 bytes per pixel (RGBA)
+		if len(update.ImageData) != expectedSize {
+			log.Errorf("Received data size (%d) does not match expected size (%d)", len(update.ImageData), expectedSize)
+			return
+		}
+		img = &image.RGBA{
+			Pix:    update.ImageData,
+			Stride: int(update.Width) * 4,
+			Rect:   image.Rect(0, 0, int(update.Width), int(update.Height)),
+		}
+	}
+
+	if err != nil {
+		log.Errorf("Failed to decode image data: %v", err)
 		return
 	}
 
-	// Create a new image.RGBA
-	img := image.NewRGBA(image.Rect(0, 0, int(update.Width), int(update.Height)))
+	// 转换为 RGBA 格式（如果不是的话）
+	bounds := img.Bounds()
+	rgbaImg := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			rgbaImg.Set(x, y, img.At(x, y))
+		}
+	}
 
-	// Copy the received data into the image
-	copy(img.Pix, update.ImageData)
-
-	// If the update is partial, we need to update only a portion of the screen
+	// 更新屏幕
 	if update.IsPartial {
-		// Assuming h.display.UpdatePartialScreen exists and handles partial updates
-		h.display.UpdatePartialScreen(img, int(update.X), int(update.Y))
+		h.display.UpdatePartialScreen(rgbaImg, int(update.X), int(update.Y))
 	} else {
-		// Full screen update
-		h.display.UpdateScreen(img)
+		h.display.UpdateScreen(rgbaImg)
 	}
 }
 
