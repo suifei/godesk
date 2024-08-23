@@ -1,8 +1,9 @@
 package server
 
 import (
-	"log"
 	"time"
+
+	"github.com/suifei/godesk/pkg/log"
 
 	"github.com/suifei/godesk/internal/protocol"
 	"github.com/suifei/godesk/pkg/network"
@@ -21,7 +22,7 @@ func NewClientHandler(conn *network.TCPConnection) *ClientHandler {
 }
 
 func (h *ClientHandler) Handle() {
-	log.Println("New client connected, starting handler")
+	log.Infoln("New client connected, starting handler")
 
 	// 开始屏幕捕获
 	go h.capturer.Start()
@@ -35,38 +36,28 @@ func (h *ClientHandler) Handle() {
 }
 
 func (h *ClientHandler) handleIncomingMessages() {
-	log.Println("Starting to handle incoming messages")
+	log.Infoln("Starting to handle incoming messages")
 	for {
 		msg, err := h.conn.Receive()
 		if err != nil {
-			log.Printf("Error receiving message: %v", err)
+			log.Errorf("Error receiving message: %v", err)
 			return
 		}
 
 		switch payload := msg.Payload.(type) {
-		case *protocol.Message_MouseEvent:
-			log.Printf("Received mouse event: %v", payload.MouseEvent)
-			h.handleMouseEvent(payload.MouseEvent)
-		case *protocol.Message_KeyEvent:
-			log.Printf("Received key event: %v", payload.KeyEvent)
-			h.handleKeyEvent(payload.KeyEvent)
+		case *protocol.Message_InputEvent:
+			log.Debugf("Received input event: %v", payload.InputEvent)
+			HandleInputEvent(payload.InputEvent)
 		default:
-			log.Printf("Received unknown message type: %T", payload)
+			log.Warnf("Received unknown message type: %T", payload)
 		}
 	}
 }
 
-func (h *ClientHandler) handleMouseEvent(event *protocol.MouseEvent) {
-	HandleMouseEvent(event)
-}
-
-func (h *ClientHandler) handleKeyEvent(event *protocol.KeyEvent) {
-	HandleKeyEvent(event)
-}
 func (h *ClientHandler) sendScreenUpdates() {
-	log.Println("Starting to send screen updates")
+	log.Infoln("Starting to send screen updates")
 	for update := range h.capturer.Updates() {
-		log.Printf("Sending screen update: %dx%d, %d bytes",
+		log.Debugf("Sending screen update: %dx%d, %d bytes",
 			update.Width, update.Height, len(update.ImageData))
 		msg := &protocol.Message{
 			Payload: &protocol.Message_ScreenUpdate{
@@ -74,7 +65,7 @@ func (h *ClientHandler) sendScreenUpdates() {
 			},
 		}
 		if err := h.conn.Send(msg); err != nil {
-			log.Printf("Error sending screen update: %v", err)
+			log.Errorf("Error sending screen update: %v", err)
 			return
 		}
 	}

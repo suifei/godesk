@@ -1,9 +1,8 @@
 package server
 
 import (
-	"log"
-
 	"github.com/suifei/godesk/internal/protocol"
+	"github.com/suifei/godesk/pkg/log"
 	"golang.org/x/sys/windows"
 )
 
@@ -31,30 +30,21 @@ const (
 	SM_CYSCREEN            = 1
 )
 
-// 模拟键盘按下事件
-func keyDown(vkCode byte) {
-	procKeyboardEvent.Call(uintptr(vkCode), 0, uintptr(inputKeyboardWVKKeyDown), 0)
-}
-
-// 模拟键盘松开事件
-func keyUp(vkCode byte) {
-	procKeyboardEvent.Call(uintptr(vkCode), 0, uintptr(inputKeyboardWVKKeyUp), 0)
-}
-
-// 处理键盘事件
-func HandleKeyEvent(event *protocol.KeyEvent) {
-	if event.EventType == protocol.KeyEvent_KEY_DOWN {
-		keyDown(byte(event.KeyCode))
-	} else if event.EventType == protocol.KeyEvent_KEY_UP {
-		keyUp(byte(event.KeyCode))
+func HandleInputEvent(event *protocol.InputEvent) {
+	switch e := event.Event.(type) {
+	case *protocol.InputEvent_MouseEvent:
+		handleMouseEvent(e.MouseEvent)
+	case *protocol.InputEvent_KeyEvent:
+		handleKeyEvent(e.KeyEvent)
+	default:
+		log.Warnf("Unknown input event type: %T", e)
 	}
-	log.Printf("Handled key event: type=%v, keyCode=%d", event.EventType, event.KeyCode)
 }
 
-// 处理鼠标事件
-func HandleMouseEvent(event *protocol.MouseEvent) {
+func handleMouseEvent(event *protocol.MouseEvent) {
 	switch event.EventType {
 	case protocol.MouseEvent_MOVE:
+		// 只有在移动事件时才设置光标位置
 		SetCursorPos(int(event.X), int(event.Y))
 	case protocol.MouseEvent_LEFT_DOWN:
 		MouseEvent(MOUSEEVENTF_LEFTDOWN)
@@ -69,14 +59,15 @@ func HandleMouseEvent(event *protocol.MouseEvent) {
 	case protocol.MouseEvent_MIDDLE_UP:
 		MouseEvent(MOUSEEVENTF_MIDDLEUP)
 	case protocol.MouseEvent_SCROLL:
+		// 对于滚轮事件，我们可能需要先设置光标位置，然后再触发滚轮事件
+		SetCursorPos(int(event.X), int(event.Y))
 		MouseEvent(MOUSEEVENTF_WHEEL, int32(event.ScrollDelta)*WHEEL_DELTA)
 	default:
-		log.Printf("Unhandled mouse event type: %v", event.EventType)
+		log.Warnf("Unhandled mouse event type: %v", event.EventType)
 	}
-	log.Printf("Handled mouse event: type=%v, x=%d, y=%d", event.EventType, event.X, event.Y)
+	log.Debugf("Handled mouse event: type=%v, x=%d, y=%d", event.EventType, event.X, event.Y)
 }
 
-// 模拟鼠标事件
 func MouseEvent(dwFlags uint32, mouseData ...int32) {
 	var md int32
 	if len(mouseData) > 0 {
@@ -85,23 +76,65 @@ func MouseEvent(dwFlags uint32, mouseData ...int32) {
 	procMouseEvent.Call(uintptr(dwFlags), 0, 0, uintptr(md), 0)
 }
 
-// 设置鼠标位置
-func SetCursorPos(x, y int) {
-	screenWidth, _ := GetSystemMetrics(SM_CXSCREEN)
-	screenHeight, _ := GetSystemMetrics(SM_CYSCREEN)
-
-	// 将相对坐标转换为绝对坐标
-	absX := int(float64(x) / float64(screenWidth) * 65535)
-	absY := int(float64(y) / float64(screenHeight) * 65535)
-
-	procSetCursorPos.Call(uintptr(absX), uintptr(absY))
+func handleKeyEvent(event *protocol.KeyEvent) {
+	vkCode := byte(event.KeyCode)
+	if event.EventType == protocol.KeyEvent_KEY_DOWN {
+		keyDown(vkCode)
+	} else if event.EventType == protocol.KeyEvent_KEY_UP {
+		keyUp(vkCode)
+	}
+	log.Debugf("Handled key event: type=%v, keyCode=%d, shift=%v, ctrl=%v, alt=%v, meta=%v",
+		event.EventType, event.KeyCode, event.Shift, event.Ctrl, event.Alt, event.Meta)
 }
 
-// 获取系统指标
+func SetCursorPos(x, y int) {
+	screenWidth, err := GetSystemMetrics(SM_CXSCREEN)
+	if err != nil {
+		log.Errorf("Failed to get screen width: %v", err)
+		return
+	}
+	screenHeight, err := GetSystemMetrics(SM_CYSCREEN)
+	if err != nil {
+		log.Errorf("Failed to get screen height: %v", err)
+		return
+	}
+
+	// 调整坐标
+	x = clamp(x, 0, screenWidth-1)
+	y = clamp(y, 0, screenHeight-1)
+
+	log.Debugf("Setting cursor position: x=%d, y=%d (screen: %dx%d)", x, y, screenWidth, screenHeight)
+	_, _, err = procSetCursorPos.Call(uintptr(x), uintptr(y))
+	if err != nil && err != windows.ERROR_SUCCESS {
+		log.Errorf("Failed to set cursor position: %v", err)
+	}
+}
+
+// clamp 函数用于将值限制在指定范围内
+func clamp(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
 func GetSystemMetrics(nIndex int) (int, error) {
 	ret, _, err := procGetSystemMetrics.Call(uintptr(nIndex))
 	if ret == 0 {
 		return 0, err
 	}
 	return int(ret), nil
+}
+
+func keyDown(vkCode byte) {
+	log.Infof("Sending key down event: vkCode=%d", vkCode)
+	procKeyboardEvent.Call(uintptr(vkCode), 0, uintptr(inputKeyboardWVKKeyDown), 0)
+}
+
+func keyUp(vkCode byte) {
+	log.Infof("Sending key down event: vkCode=%d", vkCode)
+	procKeyboardEvent.Call(uintptr(vkCode), 0, uintptr(inputKeyboardWVKKeyUp), 0)
 }

@@ -1,11 +1,93 @@
+// package client
+
+// import (
+// 	"net"
+// 	"time"
+
+// 	"github.com/suifei/godesk/pkg/log"
+
+// 	"github.com/suifei/godesk/internal/protocol"
+// 	"github.com/suifei/godesk/pkg/network"
+// )
+
+// type ClientHandler struct {
+// 	conn    *network.TCPConnection
+// 	display *Display
+// 	input   *InputHandler
+// 	running bool
+// }
+
+// func NewClientHandler(serverAddr string) (*ClientHandler, error) {
+// 	log.Debugf("Attempting to connect to %s", serverAddr)
+// 	conn, err := net.DialTimeout("tcp", serverAddr, 5*time.Second)
+// 	if err != nil {
+// 		log.Errorf("Failed to connect to server: %v", err)
+// 		return nil, err
+// 	}
+// 	log.Debugf("Successfully connected to %s", serverAddr)
+
+// 	tcpConn := network.NewTCPConnection(conn)
+// 	display := NewDisplay()
+
+// 	input := NewInputHandler(display.Window, display, tcpConn)
+
+// 	return &ClientHandler{
+// 		conn:    tcpConn,
+// 		display: display,
+// 		input:   input,
+// 		running: true,
+// 	}, nil
+// }
+
+// func (h *ClientHandler) Handle() {
+// 	defer h.conn.Close()
+
+// 	h.input.Start()
+// 	go h.handleServerMessages()
+
+// 	log.Debugf("Starting main display loop")
+// 	for h.running && !h.display.ShouldClose() {
+// 		h.display.Update()
+// 		h.display.Window.UpdateInput()
+// 		time.Sleep(time.Millisecond * 16) // 约60 FPS
+// 	}
+// 	log.Debugf("Display loop ended")
+// }
+
+// func (h *ClientHandler) handleServerMessages() {
+// 	log.Debugf("Started handling server messages")
+// 	for h.running {
+// 		msg, err := h.conn.Receive()
+// 		if err != nil {
+// 			log.Errorf("Error receiving message from server: %v", err)
+// 			h.running = false
+// 			return
+// 		}
+
+// 		log.Debugf("Received message type: %T", msg.Payload)
+
+//			switch payload := msg.Payload.(type) {
+//			case *protocol.Message_ScreenUpdate:
+//				log.Debugf("Received screen update: %dx%d, %d bytes",
+//					payload.ScreenUpdate.Width,
+//					payload.ScreenUpdate.Height,
+//					len(payload.ScreenUpdate.ImageData))
+//				h.display.UpdateScreen(payload.ScreenUpdate)
+//			default:
+//				log.Debugf("Unhandled message type: %T", payload)
+//			}
+//		}
+//	}
 package client
 
 import (
-	"log"
+	"bytes"
+	"image"
 	"net"
 	"time"
 
 	"github.com/suifei/godesk/internal/protocol"
+	"github.com/suifei/godesk/pkg/log"
 	"github.com/suifei/godesk/pkg/network"
 )
 
@@ -17,24 +99,37 @@ type ClientHandler struct {
 }
 
 func NewClientHandler(serverAddr string) (*ClientHandler, error) {
-	log.Printf("Attempting to connect to %s", serverAddr)
-	conn, err := net.DialTimeout("tcp", serverAddr, 5*time.Second)
+	log.Debugf("Attempting to connect to %s", serverAddr)
+	tcpconn, err := net.DialTimeout("tcp", serverAddr, 5*time.Second)
 	if err != nil {
-		log.Printf("Failed to connect to server: %v", err)
+		log.Errorf("Failed to connect to server: %v", err)
 		return nil, err
 	}
-	log.Printf("Successfully connected to %s", serverAddr)
+	log.Debugf("Successfully connected to %s", serverAddr)
 
-	tcpConn := network.NewTCPConnection(conn)
-	display := NewDisplay()
-	input := NewInputHandler(display.Window, display)
+	conn := network.NewTCPConnection(tcpconn)
+	if err != nil {
+		log.Errorf("Failed to connect to server: %v", err)
+		return nil, err
+	}
+	log.Debugf("Successfully connected to %s", serverAddr)
 
-	return &ClientHandler{
-		conn:    tcpConn,
+	display, err := NewDisplay(800, 600) // You can adjust these dimensions
+	if err != nil {
+		log.Errorf("Failed to create display: %v", err)
+		conn.Close()
+		return nil, err
+	}
+
+	handler := &ClientHandler{
+		conn:    conn,
 		display: display,
-		input:   input,
 		running: true,
-	}, nil
+	}
+
+	handler.input = NewInputHandler(display)
+
+	return handler, nil
 }
 
 func (h *ClientHandler) Handle() {
@@ -42,79 +137,95 @@ func (h *ClientHandler) Handle() {
 
 	h.input.Start()
 	go h.handleServerMessages()
-	go h.handleUserInput()
+	go h.handleInputEvents()
 
-	log.Println("Starting main display loop")
-	for h.running && !h.display.ShouldClose() {
-		h.display.Update()
-		h.display.Window.UpdateInput()
-		time.Sleep(time.Millisecond * 16) // 约60 FPS
-	}
-	log.Println("Display loop ended")
+	h.display.Run() // This will block until the window is closed
 }
 
 func (h *ClientHandler) handleServerMessages() {
-	log.Println("Started handling server messages")
 	for h.running {
 		msg, err := h.conn.Receive()
 		if err != nil {
-			log.Printf("Error receiving message from server: %v", err)
+			log.Errorf("Error receiving message from server: %v", err)
 			h.running = false
+			h.display.Close()
 			return
 		}
 
-		log.Printf("Received message type: %T", msg.Payload)
-
 		switch payload := msg.Payload.(type) {
 		case *protocol.Message_ScreenUpdate:
-			log.Printf("Received screen update: %dx%d, %d bytes",
-				payload.ScreenUpdate.Width,
-				payload.ScreenUpdate.Height,
-				len(payload.ScreenUpdate.ImageData))
-			h.display.UpdateScreen(payload.ScreenUpdate)
+			h.handleScreenUpdate(payload.ScreenUpdate)
 		default:
-			log.Printf("Unhandled message type: %T", payload)
+			log.Warnf("Received unknown message type: %T", payload)
 		}
 	}
 }
 
-func (h *ClientHandler) handleUserInput() {
+func (h *ClientHandler) handleScreenUpdate(update *protocol.ScreenUpdate) {
+	log.Debugf("Received screen update: %dx%d, %d bytes",
+		update.Width, update.Height, len(update.ImageData))
+
+	// Check if the received data size matches the expected size
+	expectedSize := int(update.Width) * int(update.Height) * 4 // 4 bytes per pixel (RGBA)
+	if len(update.ImageData) != expectedSize {
+		log.Errorf("Received data size (%d) does not match expected size (%d)", len(update.ImageData), expectedSize)
+		return
+	}
+
+	// Create a new image.RGBA
+	img := image.NewRGBA(image.Rect(0, 0, int(update.Width), int(update.Height)))
+
+	// Copy the received data into the image
+	copy(img.Pix, update.ImageData)
+
+	// If the update is partial, we need to update only a portion of the screen
+	if update.IsPartial {
+		// Assuming h.display.UpdatePartialScreen exists and handles partial updates
+		h.display.UpdatePartialScreen(img, int(update.X), int(update.Y))
+	} else {
+		// Full screen update
+		h.display.UpdateScreen(img)
+	}
+}
+
+// If your image data is encoded (e.g., PNG or JPEG), you would use this function instead:
+func decodeImage(data []byte) (*image.RGBA, error) {
+	// Decode the image data
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to RGBA if it's not already
+	bounds := img.Bounds()
+	rgbaImg := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			rgbaImg.Set(x, y, img.At(x, y))
+		}
+	}
+
+	return rgbaImg, nil
+}
+func (h *ClientHandler) handleInputEvents() {
 	for h.running {
 		event := h.input.NextEvent()
 		if event == nil {
-			time.Sleep(time.Millisecond * 16)
+			time.Sleep(time.Millisecond * 16) // Avoid busy-waiting
 			continue
 		}
 
-		var msg *protocol.Message
-		switch e := event.(type) {
-		case MouseEvent:
-			msg = &protocol.Message{
-				Payload: &protocol.Message_MouseEvent{
-					MouseEvent: &protocol.MouseEvent{
-						EventType: protocol.MouseEvent_EventType(e.EventType),
-						X:         int32(e.X),
-						Y:         int32(e.Y),
-					},
-				},
-			}
-		case KeyEvent:
-			msg = &protocol.Message{
-				Payload: &protocol.Message_KeyEvent{
-					KeyEvent: &protocol.KeyEvent{
-						EventType: protocol.KeyEvent_EventType(e.EventType),
-						KeyCode:   int32(e.KeyCode),
-					},
-				},
-			}
+		msg := &protocol.Message{
+			Payload: &protocol.Message_InputEvent{
+				InputEvent: event,
+			},
 		}
 
-		if msg != nil {
-			if err := h.conn.Send(msg); err != nil {
-				log.Printf("Error sending input event to server: %v", err)
-				h.running = false
-				return
-			}
+		if err := h.conn.Send(msg); err != nil {
+			log.Errorf("Error sending input event to server: %v", err)
+			h.running = false
+			h.display.Close()
+			return
 		}
 	}
 }

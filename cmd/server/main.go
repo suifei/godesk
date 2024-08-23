@@ -3,11 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/suifei/godesk/pkg/log"
 
 	"bytes"
 	"image/png"
@@ -32,17 +33,17 @@ func main() {
 	}
 	defer listener.Close()
 
-	log.Printf("Server listening on %s", addr)
+	log.Infof("Server listening on %s", addr)
 
 	for {
-		log.Println("Waiting for new connection...")
+		log.Infof("Waiting for new connection...")
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("Failed to accept connection: %v", err)
+			log.Infof("Failed to accept connection: %v", err)
 			continue
 		}
 
-		log.Printf("New connection accepted from %s", conn.RemoteAddr())
+		log.Infof("New connection accepted from %s", conn.RemoteAddr())
 		tcpConn := network.NewTCPConnection(conn)
 		go handleClient(tcpConn)
 	}
@@ -52,10 +53,10 @@ func handleClient(conn *network.TCPConnection) {
 	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
-	log.Printf("Handling client from %s", remoteAddr)
+	log.Infof("Handling client from %s", remoteAddr)
 
 	clientHandler := server.NewClientHandler(conn)
-	log.Printf("Starting to handle client from %s", remoteAddr)
+	log.Infof("Starting to handle client from %s", remoteAddr)
 
 	// 添加一个 done channel 来通知主 goroutine 何时完成
 	done := make(chan struct{})
@@ -67,9 +68,9 @@ func handleClient(conn *network.TCPConnection) {
 	// 等待处理完成或超时
 	select {
 	case <-done:
-		log.Printf("Finished handling client from %s", remoteAddr)
+		log.Errorf("Finished handling client from %s", remoteAddr)
 	case <-time.After(5 * time.Minute):
-		log.Printf("Client handling timed out for %s", remoteAddr)
+		log.Errorf("Client handling timed out for %s", remoteAddr)
 	}
 }
 func testScreenCapture() {
@@ -79,7 +80,7 @@ func testScreenCapture() {
 		log.Fatalf("Failed to capture screen: %v", err)
 	}
 
-	log.Printf("Test capture successful: %dx%d, %d bytes",
+	log.Debugf("Test capture successful: %dx%d, %d bytes",
 		update.Width, update.Height, len(update.ImageData))
 
 	// 保存捕获的图像
@@ -104,5 +105,5 @@ func testScreenCapture() {
 		log.Fatalf("Failed to save captured image: %v", err)
 	}
 
-	log.Printf("Test capture saved to: %s", outputPath)
+	log.Debugf("Test capture saved to: %s", outputPath)
 }

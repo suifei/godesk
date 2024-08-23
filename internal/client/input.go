@@ -1,138 +1,278 @@
+// package client
+
+// import (
+// 	"time"
+
+// 	"github.com/faiface/pixel"
+// 	"github.com/faiface/pixel/pixelgl"
+// 	"github.com/suifei/godesk/internal/protocol"
+// 	"github.com/suifei/godesk/pkg/log"
+// 	"github.com/suifei/godesk/pkg/network"
+// )
+
+// type InputHandler struct {
+// 	window  *pixelgl.Window
+// 	display *Display
+// 	conn    *network.TCPConnection
+// }
+
+// func NewInputHandler(window *pixelgl.Window, display *Display, conn *network.TCPConnection) *InputHandler {
+// 	return &InputHandler{
+// 		window:  window,
+// 		display: display,
+// 		conn:    conn,
+// 	}
+// }
+
+// func (h *InputHandler) Start() {
+// 	go h.pollEvents()
+// }
+
+// func (h *InputHandler) pollEvents() {
+// 	for !h.window.Closed() {
+// 		h.checkMouseEvents()
+// 		h.checkKeyEvents()
+// 		h.window.UpdateInput()
+// 		time.Sleep(0 * time.Millisecond) // 小小的睡眠以减少 CPU 使用
+// 	}
+// }
+
+// func (h *InputHandler) checkMouseEvents() {
+// 	buttons := []pixelgl.Button{
+// 		pixelgl.MouseButtonLeft,
+// 		pixelgl.MouseButtonRight,
+// 		pixelgl.MouseButtonMiddle,
+// 	}
+// 	eventTypes := []protocol.MouseEvent_EventType{
+// 		protocol.MouseEvent_LEFT_DOWN,
+// 		protocol.MouseEvent_RIGHT_DOWN,
+// 		protocol.MouseEvent_MIDDLE_DOWN,
+// 	}
+
+// 	for i, button := range buttons {
+// 		if h.window.JustPressed(button) {
+// 			h.sendMouseEvent(eventTypes[i])
+// 		}
+// 		if h.window.JustReleased(button) {
+// 			h.sendMouseEvent(eventTypes[i] + 1) // UP event is always next to DOWN event
+// 		}
+// 	}
+
+// 	currentPos := h.window.MousePosition()
+// 	if currentPos != h.window.MousePreviousPosition() {
+// 		h.sendMouseEvent(protocol.MouseEvent_MOVE)
+// 	}
+
+// 	scroll := h.window.MouseScroll()
+// 	if scroll.Y != 0 {
+// 		h.sendMouseEvent(protocol.MouseEvent_SCROLL)
+// 	}
+// }
+
+// func (h *InputHandler) checkKeyEvents() {
+// 	for key := pixelgl.KeySpace; key <= pixelgl.KeyLast; key++ {
+// 		if h.window.JustPressed(key) {
+// 			h.sendKeyEvent(protocol.KeyEvent_KEY_DOWN, key)
+// 		}
+// 		if h.window.JustReleased(key) {
+// 			h.sendKeyEvent(protocol.KeyEvent_KEY_UP, key)
+// 		}
+// 	}
+// }
+
+// func (h *InputHandler) sendMouseEvent(eventType protocol.MouseEvent_EventType) {
+// 	pos := h.window.MousePosition()
+// 	scaledPos := h.scaleMousePosition(pos)
+// 	log.Infof("Mouse event: %v, Scaled position: %v", eventType, scaledPos)
+
+// 	event := &protocol.InputEvent{
+// 		Event: &protocol.InputEvent_MouseEvent{
+// 			MouseEvent: &protocol.MouseEvent{
+// 				EventType:   eventType,
+// 				X:           int32(scaledPos.X),
+// 				Y:           int32(scaledPos.Y),
+// 				ScrollDelta: int32(h.window.MouseScroll().Y),
+// 			},
+// 		},
+// 		Timestamp: time.Now().UnixNano(),
+// 	}
+
+// 	h.sendEventToServer(event)
+// }
+
+// func (h *InputHandler) sendKeyEvent(eventType protocol.KeyEvent_EventType, key pixelgl.Button) {
+// 	event := &protocol.InputEvent{
+// 		Event: &protocol.InputEvent_KeyEvent{
+// 			KeyEvent: &protocol.KeyEvent{
+// 				EventType: eventType,
+// 				KeyCode:   int32(key),
+// 				Shift:     h.window.Pressed(pixelgl.KeyLeftShift) || h.window.Pressed(pixelgl.KeyRightShift),
+// 				Ctrl:      h.window.Pressed(pixelgl.KeyLeftControl) || h.window.Pressed(pixelgl.KeyRightControl),
+// 				Alt:       h.window.Pressed(pixelgl.KeyLeftAlt) || h.window.Pressed(pixelgl.KeyRightAlt),
+// 				Meta:      h.window.Pressed(pixelgl.KeyLeftSuper) || h.window.Pressed(pixelgl.KeyRightSuper),
+// 			},
+// 		},
+// 		Timestamp: time.Now().UnixNano(),
+// 	}
+
+// 	h.sendEventToServer(event)
+// }
+
+// func (h *InputHandler) sendEventToServer(event *protocol.InputEvent) {
+// 	msg := &protocol.Message{
+// 		Payload: &protocol.Message_InputEvent{
+// 			InputEvent: event,
+// 		},
+// 	}
+
+// 	err := h.conn.Send(msg)
+// 	if err != nil {
+// 		log.Errorf("Failed to send input event: %v", err)
+// 	}
+// }
+// func (h *InputHandler) scaleMousePosition(pos pixel.Vec) pixel.Vec {
+// 	scale := min(
+// 		h.window.Bounds().W()/h.display.spriteRect.W(),
+// 		h.window.Bounds().H()/h.display.spriteRect.H(),
+// 	)
+
+// 	imagePos := h.window.Bounds().Center().Sub(h.display.spriteRect.Center().Scaled(scale))
+
+// 	// 计算相对于图像的坐标
+// 	imageX := (pos.X - imagePos.X) / scale
+// 	imageY := (pos.Y - imagePos.Y) / scale
+
+// 	// 翻转 Y 坐标
+// 	flippedY := h.display.spriteRect.H() - imageY
+
+// 	var r pixel.Vec
+
+// 	if imageY < 0 || imageX < 0 {
+// 		r = pixel.V(0, 0)
+// 	} else if imageX > h.display.spriteRect.W() || imageY > h.display.spriteRect.H() {
+// 		r = pixel.V(h.display.spriteRect.W(), h.display.spriteRect.H())
+// 	} else {
+// 		r = pixel.V(imageX, flippedY)
+// 	}
+
+// 	log.Debugf("Mouse position: %v, Scaled position: %v, Flipped Y: %v", pos, r, flippedY)
+// 	return r
+// }
 package client
 
 import (
-	"log"
-	"sync"
-
-	"github.com/faiface/pixel"
-	"github.com/faiface/pixel/pixelgl"
 	"github.com/suifei/godesk/internal/protocol"
+	"github.com/suifei/godesk/pkg/log"
+	"time"
 )
 
-type MouseEvent struct {
-	EventType protocol.MouseEvent_EventType
-	X, Y      float64
-}
+type InputEventType int
 
-type KeyEvent struct {
-	EventType int
-	KeyCode   pixelgl.Button
+const (
+	KeyboardEvent InputEventType = iota
+	MouseEvent
+)
+
+type MouseButton int
+
+const (
+	NoButton MouseButton = iota
+	LeftButton
+	RightButton
+)
+
+type InputEvent struct {
+	Type    InputEventType
+	KeyCode int
+	X, Y    int
+	Button  MouseButton
+	Down    bool
 }
 
 type InputHandler struct {
-	window  *pixelgl.Window
-	events  chan interface{}
-	display *Display // 添加对 Display 的引用
-	mutex   sync.Mutex
+	display *Display
+	events  chan *protocol.InputEvent
 }
 
-func NewInputHandler(window *pixelgl.Window, display *Display) *InputHandler {
+func NewInputHandler(display *Display) *InputHandler {
 	return &InputHandler{
-		window:  window,
-		events:  make(chan interface{}, 100),
 		display: display,
+		events:  make(chan *protocol.InputEvent, 100),
 	}
 }
 
 func (h *InputHandler) Start() {
-	go h.pollEvents()
+	go h.handleInputEvents()
 }
 
-func (h *InputHandler) NextEvent() interface{} {
-	h.mutex.Lock()
-	defer h.mutex.Unlock()
+func (h *InputHandler) handleInputEvents() {
+	for event := range h.display.InputEvents() {
+		switch event.Type {
+		case KeyboardEvent:
+			h.handleKeyEvent(event)
+		case MouseEvent:
+			h.handleMouseEvent(event)
+		}
+	}
+}
 
+func (h *InputHandler) handleKeyEvent(event InputEvent) {
+	log.Debugf("Key event: code=%d, down=%v", event.KeyCode, event.Down)
+	h.events <- &protocol.InputEvent{
+		Event: &protocol.InputEvent_KeyEvent{
+			KeyEvent: &protocol.KeyEvent{
+				EventType: h.getKeyEventType(event.Down),
+				KeyCode:   int32(event.KeyCode),
+				// Set Shift, Ctrl, Alt, Meta as needed
+			},
+		},
+		Timestamp: time.Now().UnixNano(),
+	}
+}
+
+func (h *InputHandler) handleMouseEvent(event InputEvent) {
+	log.Debugf("Mouse event: x=%d, y=%d, button=%v, down=%v", event.X, event.Y, event.Button, event.Down)
+	h.events <- &protocol.InputEvent{
+		Event: &protocol.InputEvent_MouseEvent{
+			MouseEvent: &protocol.MouseEvent{
+				EventType: h.getMouseEventType(event),
+				X:         int32(event.X),
+				Y:         int32(event.Y),
+			},
+		},
+		Timestamp: time.Now().UnixNano(),
+	}
+}
+
+func (h *InputHandler) getKeyEventType(down bool) protocol.KeyEvent_EventType {
+	if down {
+		return protocol.KeyEvent_KEY_DOWN
+	}
+	return protocol.KeyEvent_KEY_UP
+}
+
+func (h *InputHandler) getMouseEventType(event InputEvent) protocol.MouseEvent_EventType {
+	switch event.Button {
+	case LeftButton:
+		if event.Down {
+			return protocol.MouseEvent_LEFT_DOWN
+		}
+		return protocol.MouseEvent_LEFT_UP
+	case RightButton:
+		if event.Down {
+			return protocol.MouseEvent_RIGHT_DOWN
+		}
+		return protocol.MouseEvent_RIGHT_UP
+	default:
+		return protocol.MouseEvent_MOVE
+	}
+}
+
+func (h *InputHandler) NextEvent() *protocol.InputEvent {
 	select {
 	case event := <-h.events:
 		return event
 	default:
 		return nil
 	}
-}
-
-func (h *InputHandler) pollEvents() {
-	for !h.window.Closed() {
-		h.mutex.Lock()
-		// 添加鼠标事件处理
-		// JustPressed 和 JustReleased 方法分别检查鼠标按钮是否刚刚被按下或释放
-		// 如果是，则返回 true，否则返回 false
-
-		// MouseEvent_MOVE        MouseEvent_EventType = 0
-		// MouseEvent_LEFT_DOWN   MouseEvent_EventType = 1
-		// MouseEvent_LEFT_UP     MouseEvent_EventType = 2
-		// MouseEvent_RIGHT_DOWN  MouseEvent_EventType = 3
-		// MouseEvent_RIGHT_UP    MouseEvent_EventType = 4
-		// MouseEvent_MIDDLE_DOWN MouseEvent_EventType = 5
-		// MouseEvent_MIDDLE_UP   MouseEvent_EventType = 6
-		// MouseEvent_SCROLL      MouseEvent_EventType = 7
-
-		// if h.window.JustMoved() {
-		// 	pos := h.window.MousePosition()
-		// 	scaledPos := h.scaleMousePosition(pos)
-		// 	h.events <- MouseEvent{EventType: protocol.MouseEvent_MOVE, X: scaledPos.X, Y: scaledPos.Y}
-		// }
-
-		if h.window.JustPressed(pixelgl.MouseButtonMiddle) {
-			pos := h.window.MousePosition()
-			scaledPos := h.scaleMousePosition(pos)
-			h.events <- MouseEvent{EventType: protocol.MouseEvent_MIDDLE_DOWN, X: scaledPos.X, Y: scaledPos.Y}
-		}
-
-		if h.window.JustReleased(pixelgl.MouseButtonMiddle) {
-			pos := h.window.MousePosition()
-			scaledPos := h.scaleMousePosition(pos)
-			h.events <- MouseEvent{EventType: protocol.MouseEvent_MIDDLE_UP, X: scaledPos.X, Y: scaledPos.Y}
-		}
-		if h.window.JustReleased(pixelgl.MouseButtonLeft) {
-			pos := h.window.MousePosition()
-			scaledPos := h.scaleMousePosition(pos)
-			h.events <- MouseEvent{EventType: protocol.MouseEvent_LEFT_DOWN, X: scaledPos.X, Y: scaledPos.Y}
-		}
-		if h.window.JustReleased(pixelgl.MouseButtonLeft) {
-			pos := h.window.MousePosition()
-			scaledPos := h.scaleMousePosition(pos)
-			h.events <- MouseEvent{EventType: protocol.MouseEvent_LEFT_UP, X: scaledPos.X, Y: scaledPos.Y}
-		}
-		if h.window.JustReleased(pixelgl.MouseButtonRight) {
-			pos := h.window.MousePosition()
-			scaledPos := h.scaleMousePosition(pos)
-			h.events <- MouseEvent{EventType: protocol.MouseEvent_RIGHT_DOWN, X: scaledPos.X, Y: scaledPos.Y}
-		}
-		if h.window.JustReleased(pixelgl.MouseButtonRight) {
-			pos := h.window.MousePosition()
-			scaledPos := h.scaleMousePosition(pos)
-			h.events <- MouseEvent{EventType: protocol.MouseEvent_RIGHT_UP, X: scaledPos.X, Y: scaledPos.Y}
-		}
-
-		// 添加键盘事件处理
-		for key := pixelgl.KeyUnknown; key <= pixelgl.KeyLast; key++ {
-			if h.window.JustPressed(key) {
-				h.events <- KeyEvent{EventType: 1, KeyCode: key}
-			}
-			if h.window.JustReleased(key) {
-				h.events <- KeyEvent{EventType: 2, KeyCode: key}
-			}
-		}
-
-		h.mutex.Unlock()
-		h.window.UpdateInput()
-	}
-	close(h.events)
-}
-
-func (h *InputHandler) scaleMousePosition(pos pixel.Vec) pixel.Vec {
-	scale := min(
-		h.window.Bounds().W()/h.display.spriteRect.W(),
-		h.window.Bounds().H()/h.display.spriteRect.H(),
-	)
-
-	// 计算图像在窗口中的实际位置
-	imagePos := h.window.Bounds().Center().Sub(h.display.spriteRect.Center().Scaled(scale))
-
-	// 将鼠标位置从窗口坐标转换为图像坐标
-	imageX := (pos.X - imagePos.X) / scale
-	imageY := (pos.Y - imagePos.Y) / scale
-
-	log.Println("Mouse position:", pos, "Scaled position:", pixel.V(imageX, imageY))
-	return pixel.V(imageX, imageY)
 }

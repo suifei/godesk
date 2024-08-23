@@ -4,6 +4,14 @@ package godesk;
 
 option go_package = "github.com/suifei/godesk/internal/protocol";
 
+message InputEvent {
+  oneof event {
+    MouseEvent mouse_event = 1;
+    KeyEvent key_event = 2;
+  }
+  int64 timestamp = 3;
+}
+
 message MouseEvent {
   enum EventType {
     MOVE = 0;
