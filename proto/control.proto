@@ -17,11 +17,14 @@ message MouseEvent {
     MOVE = 0;
     LEFT_DOWN = 1;
     LEFT_UP = 2;
-    RIGHT_DOWN = 3;
-    RIGHT_UP = 4;
-    MIDDLE_DOWN = 5;
-    MIDDLE_UP = 6;
-    SCROLL = 7;
+    LEFT_DBLCLICK = 3;
+    RIGHT_DOWN = 4;
+    RIGHT_UP = 5;
+    RIGHT_DBLCLICK = 6;
+    MIDDLE_DOWN = 7;
+    MIDDLE_UP = 8;
+    MIDDLE_DBLCLICK = 9;
+    SCROLL = 10;
   }
   EventType event_type = 1;
   int32 x = 2;

@@ -10,26 +10,61 @@ import (
 	"image/png"
 	"io"
 	"math"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/suifei/godesk/pkg/log"
+	"golang.org/x/sys/windows"
 
 	"github.com/kbinani/screenshot"
 	"github.com/suifei/godesk/internal/protocol"
 )
 
+// 定义必要的结构体和常量
+type POINT struct {
+	X, Y int32
+}
+
+type CURSORINFO struct {
+	CbSize      uint32
+	Flags       uint32
+	HCursor     syscall.Handle
+	PtScreenPos POINT
+}
+
+const CURSOR_SHOWING = 0x00000001
+
+// 声明 GetCursorInfo 函数
+var (
+	moduser32         = windows.NewLazySystemDLL("user32.dll")
+	procGetCursorInfo = moduser32.NewProc("GetCursorInfo")
+)
+
+func GetCursorInfo() (*CURSORINFO, error) {
+	var ci CURSORINFO
+	ci.CbSize = uint32(unsafe.Sizeof(ci))
+	ret, _, err := procGetCursorInfo.Call(uintptr(unsafe.Pointer(&ci)))
+	if ret == 0 {
+		return nil, err
+	}
+	return &ci, nil
+}
+
 type Capturer struct {
-	interval    time.Duration
-	updates     chan *protocol.ScreenUpdate
-	stop        chan struct{}
-	lastCapture *image.RGBA
+	interval      time.Duration
+	updates       chan *protocol.ScreenUpdate
+	stop          chan struct{}
+	lastCapture   *image.RGBA
+	desktopBounds image.Rectangle
 }
 
 func NewCapturer(interval time.Duration) *Capturer {
 	return &Capturer{
-		interval: interval,
-		updates:  make(chan *protocol.ScreenUpdate),
-		stop:     make(chan struct{}),
+		interval:      interval,
+		updates:       make(chan *protocol.ScreenUpdate),
+		stop:          make(chan struct{}),
+		desktopBounds: image.Rect(0, 0, 0, 0),
 	}
 }
 
@@ -64,6 +99,18 @@ func (c *Capturer) Stop() {
 func (c *Capturer) Updates() <-chan *protocol.ScreenUpdate {
 	return c.updates
 }
+func (c *Capturer) RequestUpdate() {
+	update, err := c.captureScreen()
+	if err != nil {
+		log.Errorf("Error capturing screen: %v", err)
+		return
+	}
+	if update != nil {
+		log.Debugf("Screen captured: %dx%d, %d bytes",
+			update.Width, update.Height, len(update.ImageData))
+		c.updates <- update
+	}
+}
 
 func (c *Capturer) captureScreen() (*protocol.ScreenUpdate, error) {
 	bounds := screenshot.GetDisplayBounds(0)
@@ -84,50 +131,70 @@ func (c *Capturer) captureScreen() (*protocol.ScreenUpdate, error) {
 	}
 
 	c.lastCapture = img
+	c.desktopBounds = bounds
 	return c.encodePartialImage(img, diffRect)
 }
 
 func (c *Capturer) encodeFullImage(img *image.RGBA) (*protocol.ScreenUpdate, error) {
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil, fmt.Errorf("failed to encode full image: %v", err)
+	compressionType, encodedData, err := c.encodeImage(img, false, img.Bounds())
+	if err != nil {
+		return nil, err
 	}
-	// compressionType, encodedData, err := c.encodeImage(img, false, img.Bounds())
-	// if err != nil {
-	// 	return nil, err
-	// }
-
+	sW, sH := c.desktopBounds.Dx(), c.desktopBounds.Dy()
 	return &protocol.ScreenUpdate{
 		Width:           int32(img.Bounds().Dx()),
 		Height:          int32(img.Bounds().Dy()),
-		ImageData:       buf.Bytes(), // encodedData,
+		ImageData:       encodedData,
 		Timestamp:       time.Now().UnixNano(),
 		IsPartial:       false,
-		CompressionType: protocol.CompressionType_PNG, // compressionType,
+		CompressionType: compressionType,
+		Cursor:          c.GetScreenCursorInfo(),
+		ScreenIndex:     0, // 通过windows api获取当前截图的桌面是几号桌面，桌面的宽，高
+		ScreenWidth:     int32(sW),
+		ScreenHeight:    int32(sH),
 	}, nil
 }
 
 func (c *Capturer) encodePartialImage(img *image.RGBA, rect image.Rectangle) (*protocol.ScreenUpdate, error) {
 	subImg := img.SubImage(rect).(*image.RGBA)
-	//compressionType, encodedData, err := c.encodeImage(subImg, true, rect)
-	// if err != nil {
-	// 	return nil, err
-	// }
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, subImg); err != nil {
-		return nil, fmt.Errorf("failed to encode partial image: %v", err)
+	compressionType, encodedData, err := c.encodeImage(subImg, true, rect)
+	if err != nil {
+		return nil, err
 	}
-
+	sW, sH := c.desktopBounds.Dx(), c.desktopBounds.Dy()
 	return &protocol.ScreenUpdate{
 		Width:           int32(rect.Dx()),
 		Height:          int32(rect.Dy()),
-		ImageData:       buf.Bytes(), //encodedData,
+		ImageData:       encodedData,
 		Timestamp:       time.Now().UnixNano(),
 		IsPartial:       true,
 		X:               int32(rect.Min.X),
 		Y:               int32(rect.Min.Y),
-		CompressionType: protocol.CompressionType_PNG, //compressionType,
+		CompressionType: compressionType,
+		Cursor:          c.GetScreenCursorInfo(),
+		ScreenIndex:     0, // 通过windows api获取当前截图的桌面是几号桌面，桌面的宽，高
+		ScreenWidth:     int32(sW),
+		ScreenHeight:    int32(sH),
 	}, nil
+}
+
+func (c *Capturer) GetScreenCursorInfo() *protocol.CursorInfo {
+	cursor, err := GetCursorInfo()
+
+	var _cursor *protocol.CursorInfo = nil
+
+	if err == nil {
+		_cursor = &protocol.CursorInfo{
+			CbSize:  int32(cursor.CbSize),
+			Flags:   int32(cursor.Flags),
+			HCursor: int64(cursor.HCursor),
+			PtScreenPos: &protocol.CursorPoint{
+				X: int32(cursor.PtScreenPos.X),
+				Y: int32(cursor.PtScreenPos.Y),
+			},
+		}
+	}
+	return _cursor
 }
 
 func (c *Capturer) encodeImage(img *image.RGBA, isPartial bool, rect image.Rectangle) (protocol.CompressionType, []byte, error) {

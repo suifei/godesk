@@ -12,12 +12,14 @@ import (
 type ClientHandler struct {
 	conn     *network.TCPConnection
 	capturer *Capturer
+	echoMode bool
 }
 
 func NewClientHandler(conn *network.TCPConnection) *ClientHandler {
 	return &ClientHandler{
 		conn:     conn,
 		capturer: NewCapturer(100 * time.Millisecond), // 每100ms捕获一次屏幕
+		echoMode: false,
 	}
 }
 
@@ -25,9 +27,10 @@ func (h *ClientHandler) Handle() {
 	log.Infoln("New client connected, starting handler")
 
 	// 开始屏幕捕获
-	go h.capturer.Start()
-	defer h.capturer.Stop()
-
+	if !h.echoMode {
+		go h.capturer.Start()
+		defer h.capturer.Stop()
+	}
 	// 处理来自客户端的消息
 	go h.handleIncomingMessages()
 
@@ -48,6 +51,9 @@ func (h *ClientHandler) handleIncomingMessages() {
 		case *protocol.Message_InputEvent:
 			log.Debugf("Received input event: %v", payload.InputEvent)
 			HandleInputEvent(payload.InputEvent)
+		case *protocol.Message_ScreenUpdateRequest:
+			log.Debugf("Received screen update request: %v", payload.ScreenUpdateRequest)
+			h.capturer.RequestUpdate()
 		default:
 			log.Warnf("Received unknown message type: %T", payload)
 		}
