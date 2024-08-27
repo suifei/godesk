@@ -75,7 +75,12 @@ func (h *ClientHandler) handleServerMessages() {
 
 		switch payload := msg.Payload.(type) {
 		case *protocol.Message_ScreenUpdate:
-			h.handleScreenUpdate(payload.ScreenUpdate)
+			if payload.ScreenUpdate.ScreenWidth == 0 || payload.ScreenUpdate.ScreenHeight == 0 {
+				log.Warnf("Received screen update with invalid dimensions: %dx%d",
+					payload.ScreenUpdate.Width, payload.ScreenUpdate.Height)
+			}else{
+				h.handleScreenUpdate(payload.ScreenUpdate)
+			}			
 		default:
 			log.Warnf("Received unknown message type: %T", payload)
 		}

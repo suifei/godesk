@@ -82,9 +82,13 @@ func (c *Capturer) Start() {
 				continue
 			}
 			if update != nil {
-				log.Debugf("Screen captured: %dx%d, %d bytes",
-					update.Width, update.Height, len(update.ImageData))
-				c.updates <- update
+				if update.ImageData != nil {
+					log.Debugf("Screen captured: %dx%d, %d bytes",
+						update.Width, update.Height, len(update.ImageData))
+					c.updates <- update
+				} else {
+					log.Errorf("Error capturing screen: %v", err)
+				}
 			}
 		case <-c.stop:
 			log.Infoln("Screen capturer stopped")

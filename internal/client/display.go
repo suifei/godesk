@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"runtime"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -76,6 +77,34 @@ const (
 	GMEM_GHND     = GMEM_MOVEABLE | GMEM_ZEROINIT
 	GMEM_GPTR     = GMEM_FIXED | GMEM_ZEROINIT
 )
+
+var (
+	gdiplus                       = windows.NewLazySystemDLL("gdiplus.dll")
+	procGdiplusStartup            = gdiplus.NewProc("GdiplusStartup")
+	procGdiplusShutdown           = gdiplus.NewProc("GdiplusShutdown")
+	procGdipCreateBitmapFromScan0 = gdiplus.NewProc("GdipCreateBitmapFromScan0")
+	procGdipCreateFromHDC         = gdiplus.NewProc("GdipCreateFromHDC")
+	procGdipDrawImageRectRect     = gdiplus.NewProc("GdipDrawImageRectRect")
+	procGdipDeleteGraphics        = gdiplus.NewProc("GdipDeleteGraphics")
+	procGdipDisposeImage          = gdiplus.NewProc("GdipDisposeImage")
+	procGdipGraphicsClear         = gdiplus.NewProc("GdipGraphicsClear")
+	procGdipCreatePen1            = gdiplus.NewProc("GdipCreatePen1")
+	procGdipDeletePen             = gdiplus.NewProc("GdipDeletePen")
+	procGdipDrawRectangle         = gdiplus.NewProc("GdipDrawRectangle")
+)
+
+type GdiplusStartupInput struct {
+	GdiplusVersion           uint32
+	DebugEventCallback       uintptr
+	SuppressBackgroundThread int32
+	SuppressExternalCodecs   int32
+}
+
+// GDI+ types
+type GpImage uintptr
+type GpGraphics uintptr
+type GpPen uintptr
+type GpBitmap uintptr
 
 // HDC and HBITMAP types
 type HDC uintptr
@@ -250,33 +279,67 @@ func GlobalUnlock(hMem HGLOBAL) error {
 	return nil
 }
 
+type WMDrawInfo struct {
+	rgba         *image.RGBA
+	x, y         int
+	screenWidth  int
+	screenHeight int
+}
+
 type Display struct {
-	window     ui.WindowMain
-	width      int
-	height     int
-	imageData  *image.RGBA
-	inputChan  chan InputEvent
+	window       ui.WindowMain
+	width        int
+	height       int
+	imageData    *image.RGBA
+	inputChan    chan InputEvent
+	gdiplusToken uintptr
+
+	lastDrawInfo WMDrawInfo
+	drawMutex    sync.Mutex
 }
 
 func NewDisplay(width, height int) (*Display, error) {
 	d := &Display{
-		width:      width,
-		height:     height,
-		inputChan:  make(chan InputEvent, 100),
+		width:     width,
+		height:    height,
+		inputChan: make(chan InputEvent, 100),
 	}
 
 	d.window = ui.NewWindowMain(
 		ui.WindowMainOpts().
 			Title("GoDesk Client").
 			ClientArea(win.SIZE{Cx: int32(width), Cy: int32(height)}).
-			WndStyles(co.WS_CAPTION | co.WS_SYSMENU | co.WS_CLIPCHILDREN |
-				co.WS_BORDER | co.WS_VISIBLE | co.WS_MINIMIZEBOX |
+			WndStyles(co.WS_CAPTION | co.WS_SYSMENU | co.WS_OVERLAPPEDWINDOW |
+				co.WS_BORDER | co.WS_VISIBLE | co.WS_MINIMIZEBOX | co.WS_CLIPCHILDREN |
 				co.WS_MAXIMIZEBOX | co.WS_SIZEBOX),
 	)
-
+	// 初始化 GDI+
+	var token uintptr
+	startup := GdiplusStartupInput{GdiplusVersion: 1}
+	ret, _, _ := procGdiplusStartup.Call(
+		uintptr(unsafe.Pointer(&token)),
+		uintptr(unsafe.Pointer(&startup)),
+		0,
+	)
+	if ret != 0 {
+		return nil, fmt.Errorf("GdiplusStartup failed with status %d", ret)
+	}
+	d.gdiplusToken = token
+	log.Debug("GDI+ initialized successfully")
 	d.setupEventHandlers()
 
 	return d, nil
+}
+
+func (d *Display) GetClientSize() (int, int) {
+
+	// 获取窗口的客户区大小
+	var rect RECT
+	GetClientRect(uintptr(d.window.Hwnd()), &rect)
+	clientWidth := int(rect.Right - rect.Left)
+	clientHeight := int(rect.Bottom - rect.Top)
+	return clientWidth, clientHeight
+
 }
 
 var isMouseDown = false
@@ -291,15 +354,32 @@ func (d *Display) setupEventHandlers() {
 		log.Infoln("Window destroyed")
 		close(d.inputChan)
 	})
-
 	d.window.On().WmPaint(func() {
-		if d.imageData != nil {
-			// Implement drawing logic here
-			log.Debugln("Drawing updated screen")
+		log.Debug("WM_PAINT received")
+		var drawInfo WMDrawInfo
+		d.drawMutex.Lock()
+		drawInfo = d.lastDrawInfo
+		d.drawMutex.Unlock()
 
+		if drawInfo.rgba != nil {
+			var ps win.PAINTSTRUCT
+			hdc := d.window.Hwnd().BeginPaint(&ps)
+			// hdc := d.window.Hwnd().GetDC()
+			err := d.drawImage(hdc, drawInfo.rgba, drawInfo.x, drawInfo.y, drawInfo.screenWidth, drawInfo.screenHeight)
+			d.window.Hwnd().EndPaint(&ps)
+			if err != nil {
+				log.Errorf("Failed to draw image: %v", err)
+			} else {
+				log.Debug("Image drawn successfully")
+			}
+		} else {
+			log.Debug("No image data to draw")
 		}
-	})
 
+	})
+	d.window.On().WmSize(func(p wm.Size) {
+		d.window.Hwnd().InvalidateRect(nil, false)
+	})
 	d.window.On().WmSysKeyDown(func(p wm.Key) {
 		d.HandleKeyEvent(p.Msg.WParam, true)
 	})
@@ -403,7 +483,7 @@ func (d *Display) setupEventHandlers() {
 			Y:      int(p.Pos().Y),
 			Button: NoButton,
 		}
-		log.Infof("Mouse move: %d, %d", p.Pos().X, p.Pos().Y)
+		// log.Infof("Mouse move: %d, %d", p.Pos().X, p.Pos().Y)
 	})
 
 	d.window.On().WmLButtonDblClk(func(p wm.Mouse) {
@@ -478,7 +558,7 @@ func (d *Display) Run() {
 }
 
 func (d *Display) Close() {
-	// windigo handles window destruction automatically
+	procGdiplusShutdown.Call(d.gdiplusToken)
 }
 
 func (d *Display) InputEvents() <-chan InputEvent {
@@ -486,29 +566,158 @@ func (d *Display) InputEvents() <-chan InputEvent {
 }
 
 func (d *Display) UpdateScreen(update *protocol.ScreenUpdate, rgba *image.RGBA, x, y, screenWidth, screenHeight int) {
-	d.imageData = rgba
-
-	// 获取设备上下文 (DC)
-	hdc := d.window.Hwnd().GetDC()
-	defer d.window.Hwnd().ReleaseDC(hdc)
-
-	// 检查设备上下文的设置
-	checkDCSettings(HDC(hdc))
-
-	// 设置光标
-	// if update.Cursor != nil {
-	// 	hcursor := update.Cursor.HCursor
-	// 	SetCursor(syscall.Handle(hcursor))
-	// }
-
-	// 调用绘制逻辑
-	if err := d.drawImage(HDC(hdc), d.imageData, d.imageData.Bounds().Dx(), d.imageData.Bounds().Dy(), x, y, screenWidth, screenHeight); err != nil {
-		log.Errorf("Failed to draw image: %v", err)
+	if rgba == nil || rgba.Bounds().Empty() {
+		log.Error("UpdateScreen called with invalid rgba")
 		return
 	}
-	log.Debugf("Screen updated: %dx%d at (%d,%d), remote(%d,%d)", d.imageData.Bounds().Dx(), d.imageData.Bounds().Dy(), x, y, screenWidth, screenHeight)
+	log.Debugf("UpdateScreen called: x=%d, y=%d, width=%d, height=%d, screenWidth=%d, screenHeight=%d",
+		x, y, rgba.Bounds().Dx(), rgba.Bounds().Dy(), screenWidth, screenHeight)
+
+	d.drawMutex.Lock()
+	d.lastDrawInfo =  WMDrawInfo{
+		rgba:         rgba,
+		x:            x,
+		y:            y,
+		screenWidth:  screenWidth,
+		screenHeight: screenHeight,
+	}
+	d.drawMutex.Unlock()
+
+	// 使用 PostMessage 而不是直接调用 InvalidateRect
+	d.window.Hwnd().PostMessage(co.WM_PAINT, 0, 0)
+
+	d.window.Hwnd().UpdateWindow()
+	log.Debug("Posted WM_PAINT message")
 }
-func (d *Display) drawImage(hdc HDC, rgba *image.RGBA, width, height, x, y, screenWidth, screenHeight int) error {
+
+func (d *Display) drawImage(hdc win.HDC, rgba *image.RGBA, x, y, screenWidth, screenHeight int) error {
+	if hdc == 0 {
+		return fmt.Errorf("invalid HDC")
+	}
+
+	if rgba == nil || len(rgba.Pix) == 0 {
+		return fmt.Errorf("invalid image data")
+	}
+	log.Debugf("Image data: %dx%d, Stride: %d, len(Pix): %d", rgba.Bounds().Dx(), rgba.Bounds().Dy(), rgba.Stride, len(rgba.Pix))
+
+	// 获取窗口的客户区大小
+	var rect RECT
+	GetClientRect(uintptr(d.window.Hwnd()), &rect)
+	clientWidth := int(rect.Right - rect.Left)
+	clientHeight := int(rect.Bottom - rect.Top)
+
+	// 计算缩放比例
+	scaleX := float64(clientWidth) / float64(screenWidth)
+	scaleY := float64(clientHeight) / float64(screenHeight)
+	scale := math.Min(scaleX, scaleY)
+
+	log.Debugf("Server dimensions: %dx%d, client dimensions: %dx%d", screenWidth, screenHeight, clientWidth, clientHeight)
+	log.Debugf("Client dimensions: %dx%d, scale: %f", clientWidth, clientHeight, scale)
+
+	// 计算缩放后的位置和尺寸
+	scaledX := int(float64(x) * scale)
+	scaledY := int(float64(y) * scale)
+	scaledWidth := int(float64(rgba.Bounds().Dx()) * scale)
+	scaledHeight := int(float64(rgba.Bounds().Dy()) * scale)
+
+	// 确保缩放后的尺寸至少为1像素
+	if scaledWidth < 1 {
+		scaledWidth = 1
+	}
+	if scaledHeight < 1 {
+		scaledHeight = 1
+	}
+
+	log.Debugf("Scaled dimensions: x=%d, y=%d, width=%d, height=%d", scaledX, scaledY, scaledWidth, scaledHeight)
+
+	var bitmap GpBitmap
+	ret, _, err := procGdipCreateBitmapFromScan0.Call(
+		uintptr(rgba.Bounds().Dx()),
+		uintptr(rgba.Bounds().Dy()),
+		uintptr(rgba.Stride),
+		uintptr(0x26200A), // PixelFormat32bppARGB
+		uintptr(unsafe.Pointer(&rgba.Pix[0])),
+		uintptr(unsafe.Pointer(&bitmap)),
+	)
+	if ret != 0 {
+		return fmt.Errorf("GdipCreateBitmapFromScan0 failed with status %d: %v", ret, err)
+	}
+	defer procGdipDisposeImage.Call(uintptr(bitmap))
+	log.Debug("GDI+ bitmap created successfully")
+
+	var graphics GpGraphics
+	ret, _, err = procGdipCreateFromHDC.Call(
+		uintptr(hdc),
+		uintptr(unsafe.Pointer(&graphics)),
+	)
+	if ret != 0 {
+		return fmt.Errorf("GdipCreateFromHDC failed with status %d: %v", ret, err)
+	}
+	defer procGdipDeleteGraphics.Call(uintptr(graphics))
+	log.Debug("GDI+ graphics created successfully")
+
+	// 尝试清除背景
+	// ret, _, err = procGdipGraphicsClear.Call(
+	// 	uintptr(graphics),
+	// 	uintptr(0xFFFFFFFF), // White color
+	// )
+	// if ret != 0 {
+	// 	return fmt.Errorf("GdipGraphicsClear failed with status %d: %v", ret, err)
+	// }
+	// log.Debug("GDI+ background cleared successfully")
+
+	ret, _, err = procGdipDrawImageRectRect.Call(
+		uintptr(graphics),
+		uintptr(bitmap),
+		uintptr(float32(scaledX)),
+		uintptr(float32(scaledY)),
+		uintptr(float32(scaledWidth)),
+		uintptr(float32(scaledHeight)),
+		0,
+		0,
+		uintptr(float32(rgba.Bounds().Dx())),
+		uintptr(float32(rgba.Bounds().Dy())),
+		3, // Unit_Pixel
+		0,
+		0,
+		0,
+	)
+	if ret != 0 {
+		return fmt.Errorf("GdipDrawImageRectRect failed with status %d: %v", ret, err)
+	}
+
+	// 创建一个红色画笔
+	var pen GpPen
+	ret, _, _ = procGdipCreatePen1.Call(
+		uintptr(0xFFFF0000), // 红色
+		uintptr(float32(5)), // 线宽
+		3,                   // 单位：像素
+		uintptr(unsafe.Pointer(&pen)),
+	)
+	if ret != 0 {
+		return fmt.Errorf("GdipCreatePen1 failed with status %d", ret)
+	}
+	defer procGdipDeletePen.Call(uintptr(pen))
+
+	// 绘制一个矩形
+	ret, _, _ = procGdipDrawRectangle.Call(
+		uintptr(graphics),
+		uintptr(pen),
+		uintptr(float32(10)),
+		uintptr(float32(10)),
+		uintptr(float32(clientWidth-10)),
+		uintptr(float32(clientHeight-10)),
+	)
+	if ret != 0 {
+		return fmt.Errorf("GdipDrawRectangle failed with status %d", ret)
+	}
+
+	log.Debug("GDI+ drawing completed successfully")
+
+	return nil
+}
+
+func (d *Display) drawImage3(hdc HDC, rgba *image.RGBA, width, height, x, y, screenWidth, screenHeight int) error {
 	// 获取窗口的客户区大小
 	var rect RECT
 	GetClientRect(uintptr(d.window.Hwnd()), &rect)
@@ -538,8 +747,6 @@ func (d *Display) drawImage(hdc HDC, rgba *image.RGBA, width, height, x, y, scre
 	scaledWidth := int(float64(width) * scale)
 	scaledHeight := int(float64(height) * scale)
 
-	fmt.Println("clientWidth:", clientWidth, "clientHeight:", clientHeight, "fullWidth:", fullWidth, "fullHeight:", fullHeight)
-	fmt.Println ( "scaledX:", scaledX, "scaledY:", scaledY, "scaledWidth:", scaledWidth, "scaledHeight:", scaledHeight)
 	// 创建兼容的DC和位图
 	hdcMem, err := CreateCompatibleDC(hdc)
 	if err != nil {
@@ -601,80 +808,6 @@ func (d *Display) drawImage(hdc HDC, rgba *image.RGBA, width, height, x, y, scre
 
 	return nil
 }
-
-// func (d *Display) drawImage(hdc HDC, rgba *image.RGBA, width, height, x, y int) error {
-// 	// Check image dimensions
-// 	if rgba.Bounds().Dx() != width || rgba.Bounds().Dy() != height {
-// 		return fmt.Errorf("Image dimensions do not match: expected %dx%d, got %dx%d", width, height, rgba.Bounds().Dx(), rgba.Bounds().Dy())
-// 	}
-
-// 	// Create a compatible DC
-// 	hdcMem, err := CreateCompatibleDC(hdc)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to create compatible DC: %v", err)
-// 	}
-// 	defer DeleteObject(uintptr(hdcMem))
-
-// 	// Create a compatible bitmap
-// 	hBitmap, err := CreateCompatibleBitmap(hdc, int32(width), int32(height))
-// 	if err != nil {
-// 		return fmt.Errorf("failed to create compatible bitmap: %v", err)
-// 	}
-// 	defer DeleteObject(uintptr(hBitmap))
-
-// 	// Select the bitmap into the compatible DC
-// 	oldBitmap, err := SelectObject(hdcMem, uintptr(hBitmap))
-// 	if err != nil {
-// 		return fmt.Errorf("failed to select bitmap into DC: %v", err)
-// 	}
-// 	defer SelectObject(hdcMem, oldBitmap)
-
-// 	// Prepare BITMAPINFO
-// 	bi := BITMAPINFO{
-// 		BmiHeader: BITMAPINFOHEADER{
-// 			BiSize:        uint32(unsafe.Sizeof(BITMAPINFOHEADER{})), // Size of this structure
-// 			BiWidth:       int32(width),                              // Width of bitmap
-// 			BiHeight:      -int32(height),                            // Top-down DIB
-// 			BiPlanes:      1,                                         // 1 plane
-// 			BiBitCount:    32,                                        // 32 bits per pixel (RGBA)
-// 			BiCompression: BI_RGB,                                    // RGB encoding
-// 		},
-// 	}
-
-// 	// Calculate the size of the bitmap data
-// 	dataSize := uint32(width * height * 4) // 4 bytes per pixel (RGBA)
-
-// 	// Allocate memory for bitmap data
-// 	rawMem, err := GlobalAlloc(GMEM_FIXED|GMEM_ZEROINIT, dataSize)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to allocate memory: %v", err)
-// 	}
-// 	defer GlobalFree(rawMem)
-
-// 	bmpSlice, err := GlobalLock(rawMem)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to lock memory: %v", err)
-// 	}
-// 	defer GlobalUnlock(rawMem)
-
-// 	// Copy image data to memory block
-// 	copy((*[1 << 30]byte)(bmpSlice)[:dataSize], rgba.Pix)
-
-// 	// Draw the bitmap to the device context
-// 	if err := SetDIBitsToDevice(
-// 		hdc,
-// 		uint32(x), uint32(y), // Destination position
-// 		uint32(width), uint32(height), // Width and height of destination area
-// 		0, 0, // Source position
-// 		0, uint32(height), // Scanlines to copy
-// 		bmpSlice,
-// 		&bi,
-// 		DIB_RGB_COLORS,
-// 	); err != nil {
-// 		return fmt.Errorf("failed to draw bitmap: %v", err)
-// 	}
-// 	return nil
-// }
 
 func checkDCSettings(hdc HDC) {
 	// 获取颜色深度
